@@ -5,7 +5,11 @@ min_fan: 10
 # strategy to default to let the hardware manage them. "Temp" is
 # the CPU temp(s).
 panic_temps:
+  # If Exhaust Temp goes over this limit, panic and go back to
+  # system-managed fans
   "Exhaust Temp": 40
+  # If CPU Temp goes over this limit, panic and go back to
+  # system-managed fans
   "Temp": 60
 # sensor is the primary sensor we will monitor for controlling fan speeds.
 sensor: Exhaust Temp
