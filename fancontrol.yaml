@@ -1,0 +1,41 @@
+# min_fan is the minimum percentage we will ever run the fans at.
+min_fan: 10
+# panic_temps defines other IPMI sensors we will examine and if
+# any of them go over the specified limit, we will reset the fan
+# strategy to default to let the hardware manage them. "Temp" is
+# the CPU temp(s).
+panic_temps:
+  "Exhaust Temp": 40
+  "Temp": 60
+# sensor is the primary sensor we will monitor for controlling fan speeds.
+sensor: Exhaust Temp
+# poll_time is how often (in seconds) we poll IPMI for temps.
+poll_time: 10
+pid:
+  # pid.sample_time is the lower limit on how often the PID controller
+  # will make a change. 30s is a good value because any change takes a
+  # while to be reflected in the temps.
+  sample_time: 30
+  # pid.target_temp is the temperature we're shooting for. Higher than
+  # that, and we'll command fans to reach that point. Lower than that
+  # and we assume we only need minimal cooling.
+  target_temp: 32
+  # pid.fan_scale is the step size we use for increasing the
+  # fans. This sort of overlaps with pid.kp, but is simpler. If PID
+  # asks for one unit of control input, we'll multiply by this
+  # number. Recommend this be set to 1 unless there's a reason not to.
+  fan_scale: 1
+  # pid.kp, pid.ki, pid.kd: The usual PID parameters. Defaults of 2,
+  # 0.02, 0 work well for me.
+  kp: 2
+  ki: 0.02
+  kd: 0
+log_sensors:
+  # List of IPMI sensors that we should also monitor for logging purposes.
+  - "Temp"
+  - "Inlet Temp"
+# Push the target and temperature values to graphite for monitoring
+#graphite:
+#  host: "eagle.hv.danplanet.com"
+#  port: 2003
+#  prefix_hostname: short
