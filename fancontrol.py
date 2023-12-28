@@ -81,6 +81,7 @@ class Controller:
 
     def fanmode_set(self, pct):
         # Manual set to a speed
+        pct = min(100, pct)
         if self.current_target != pct:
             LOG.info('Changing fan target to %i%%' % pct)
             self.run_ipmitool('raw', '0x30', '0x30', '0x01', '0x00')
