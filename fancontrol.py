@@ -33,10 +33,12 @@ class Controller:
         self.conf_file = config
         self.load_config()
         self.run = True
-        atexit.register(self.fanmode_default)
-        signal.signal(signal.SIGTERM, self.signal)
         self.current_target = object()
         self.sensors = {}
+
+        # Attempt to always revert to default on exit
+        atexit.register(self.fanmode_default)
+        signal.signal(signal.SIGTERM, self.signal)
 
     def temp(self, tempC):
         if self.config.get('units', 'c').lower() == 'f':
@@ -158,6 +160,7 @@ class Controller:
             time.sleep(self.poll_time)
             self.check_config()
 
+        # If we exit the control loop for any reason, back to default.
         self.fanmode_default()
 
 
