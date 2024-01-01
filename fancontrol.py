@@ -71,8 +71,15 @@ class Controller:
 
     def run_ipmitool(self, *args):
         # LOG.debug('Running ipmitool %s' % ' '.join(str(a) for a in args))
-        out = subprocess.check_output(['/usr/bin/ipmitool'] + list(args))
-        return out
+        for retry in range(3):
+            try:
+                return subprocess.check_output(
+                    ['/usr/bin/ipmitool'] + list(args))
+            except Exception as e:
+                LOG.exception('Failed to run ipmitool %s: %s; retrying',
+                              str(args), e)
+                time.sleep(5)
+        LOG.error('PANIC: Unable to run ipmitool!')
 
     def fanmode_default(self):
         # System-controlled
