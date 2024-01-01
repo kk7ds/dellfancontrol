@@ -134,38 +134,48 @@ class Controller:
         if log_sensors:
             LOG.info('Other sensors: %s', ','.join(log_sensors))
 
+    def safety_check(self):
+        for temp, limit in self.panic_temps.items():
+            try:
+                this_temp = int(self.sensors[temp])
+            except TypeError:
+                LOG.warning('Temp %s reported as %s; going to default',
+                            temp, self.sensors[temp])
+                self.fanmode_default()
+                return False
+            if self.sensors[temp] >= limit:
+                LOG.warning(
+                    'Temp %s %s over panic temp %s; going to default',
+                    temp, self.temp(this_temp), self.temp(limit))
+                self.fanmode_default()
+                return False
+        return True
+
+    def regular_check(self):
+        temp = self.sensors[self.monitor_temp]
+        target = self.target_logic(temp)
+        if target is None:
+            self.fanmode_default()
+        else:
+            self.fanmode_set(target)
+
+        if self.config.get('graphite'):
+            if self.config['graphite'].get('prefix_hostname') == 'short':
+                prefix = HOSTNAME.split('.')[0]
+            else:
+                prefix = HOSTNAME
+            report_values(self.config['graphite']['host'],
+                          self.config['graphite'].get('port', 2003),
+                          {'%s.fancontrol.temp' % prefix: temp,
+                           '%s.fancontrol.target' % prefix: target})
+
     def monitor_loop(self):
         while self.run:
-            self.get_sensors()
-
-            for temp, limit in self.panic_temps.items():
-                if self.sensors[temp] >= limit:
-                    LOG.warning(
-                        'Temp %s %s over panic temp %s; going to default',
-                        temp, self.temp(self.sensors[temp]), self.temp(limit))
-                    self.fanmode_default()
-                    time.sleep(self.poll_time)
-                    continue
-
-            temp = self.sensors[self.monitor_temp]
-            target = self.target_logic(temp)
-            if target is None:
-                self.fanmode_default()
-            else:
-                self.fanmode_set(target)
-
-            if self.config.get('graphite'):
-                if self.config['graphite'].get('prefix_hostname') == 'short':
-                    prefix = HOSTNAME.split('.')[0]
-                else:
-                    prefix = HOSTNAME
-                report_values(self.config['graphite']['host'],
-                              self.config['graphite'].get('port', 2003),
-                              {'%s.fancontrol.temp' % prefix: temp,
-                               '%s.fancontrol.target' % prefix: target})
-
-            time.sleep(self.poll_time)
             self.check_config()
+            self.get_sensors()
+            if self.safety_check():
+                self.regular_check()
+            time.sleep(self.poll_time)
 
         # If we exit the control loop for any reason, back to default.
         self.fanmode_default()
