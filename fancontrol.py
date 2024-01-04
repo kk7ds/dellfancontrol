@@ -138,7 +138,7 @@ class Controller:
         for temp, limit in self.panic_temps.items():
             try:
                 this_temp = int(self.sensors[temp])
-            except TypeError:
+            except (ValueError, TypeError):
                 LOG.warning('Temp %s reported as %s; going to default',
                             temp, self.sensors[temp])
                 self.fanmode_default()
