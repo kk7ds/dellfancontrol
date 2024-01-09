@@ -28,6 +28,111 @@ def report_values(host, port, values):
     s.close()
 
 
+def run_ipmitool(*args):
+    # LOG.debug('Running ipmitool %s' % ' '.join(str(a) for a in args))
+    for retry in range(3):
+        try:
+            return subprocess.check_output(
+                ['/usr/bin/ipmitool'] + list(args))
+        except Exception as e:
+            LOG.exception('Failed to run ipmitool %s: %s; retrying',
+                          str(args), e)
+            time.sleep(5)
+    LOG.error('PANIC: Unable to run ipmitool!')
+
+
+class Panic(Exception):
+    pass
+
+
+class Sensor:
+    def __init__(self, target, panic, sample_time=0):
+        self.target = target
+        self.panic = panic
+        self._current = target
+        self.sample_time = sample_time
+        self.last_sample = 0
+
+    def get_sample(self):
+        pass
+
+    def sample(self):
+        if time.monotonic() - self.last_sample > self.sample_time:
+            self._current = self.get_sample()
+            self.last_sample = time.monotonic()
+            if self.panic is not None and self.current >= self.panic:
+                raise Panic('Sensor panic: %s is %i > %i' % (
+                    self, self.current, self.panic))
+
+    @property
+    def current(self):
+        return self._current
+
+    @property
+    def delta(self):
+        if self.target is None:
+            return 0
+        return self._current - self.target
+
+
+class CompositeSensor(Sensor):
+    def __init__(self, sensors):
+        self.sensors = sensors
+
+    def sample(self):
+        for i in self.sensors:
+            i.sample()
+
+    @property
+    def delta(self):
+        return max([s.delta for s in self.sensors])
+
+
+class IPMISensor(Sensor):
+    # Cache of sensor values from the last refresh
+    sensors = {}
+    # Timestamp of last sensor refresh from IPMI
+    _last_get = 0
+
+    def __init__(self, target, panic, name, sample_time=0):
+        super().__init__(target, panic)
+        self.name = name
+
+    @classmethod
+    def get_sensors(cls):
+        if time.monotonic() - cls._last_get < 10:
+            return
+
+        o = run_ipmitool('sensor').decode()
+        lines = [line.strip() for line in o.split('\n') if line.strip()]
+        cls.sensors = {}
+        for line in lines:
+            fields = [x.strip() for x in line.split('|')]
+            val = fields[1]
+            if val.startswith('0x'):
+                val = int(val, 16)
+            else:
+                try:
+                    val = float(fields[1])
+                except ValueError:
+                    pass
+            if fields[0] in cls.sensors:
+                # Some sensors (like CPU "Temp") are not unique,
+                # so take the higher of the values
+                try:
+                    cls.sensors[fields[0]] = max(cls.sensors[fields[0]], val)
+                except TypeError:
+                    # Multi-value sensor with differing types, just ignore
+                    pass
+            else:
+                cls.sensors[fields[0]] = val
+        cls._last_get = time.monotonic()
+
+    def get_sample(self):
+        self.get_sensors()
+        return self.sensors[self.name]
+
+
 class Controller:
     def __init__(self, config):
         self.conf_file = config
@@ -50,12 +155,18 @@ class Controller:
         conf_file = open(self.conf_file, 'r')
         self.config = yaml.load(conf_file, Loader=yaml.CLoader)
         self.min_fan = self.config.get('min_fan', 10)
-        panic_defaults = {
-            'Exhaust Temp': 40,
-            'Temp': 60,
-        }
-        self.panic_temps = self.config.get('panic_temps', panic_defaults)
-        self.monitor_temp = self.config.get('sensor', 'Exhaust Temp')
+
+        self.monitor_sensors = []
+        for data in self.config['sensors']:
+            if data['type'] == 'ipmi':
+                s = IPMISensor(data.get('target'), data.get('panic'),
+                               data['name'])
+            else:
+                LOG.error('Unknown sensor type %r' % data['type'])
+                continue
+            self.monitor_sensors.append(s)
+
+        self.monitor_temp = CompositeSensor(self.monitor_sensors)
         self.poll_time = self.config.get('poll_time', 10)
         self.config_ts = os.lstat(self.conf_file).st_mtime
 
@@ -69,23 +180,11 @@ class Controller:
         LOG.warning('Signal received, stopping')
         self.run = False
 
-    def run_ipmitool(self, *args):
-        # LOG.debug('Running ipmitool %s' % ' '.join(str(a) for a in args))
-        for retry in range(3):
-            try:
-                return subprocess.check_output(
-                    ['/usr/bin/ipmitool'] + list(args))
-            except Exception as e:
-                LOG.exception('Failed to run ipmitool %s: %s; retrying',
-                              str(args), e)
-                time.sleep(5)
-        LOG.error('PANIC: Unable to run ipmitool!')
-
     def fanmode_default(self):
         # System-controlled
         if self.current_target is not None:
             LOG.info('Changing fan target to default')
-            self.run_ipmitool('raw', '0x30', '0x30', '0x01', '0x01')
+            run_ipmitool('raw', '0x30', '0x30', '0x01', '0x01')
             self.current_target = None
 
     def fanmode_set(self, pct):
@@ -93,67 +192,28 @@ class Controller:
         pct = min(100, pct)
         if self.current_target != pct:
             LOG.info('Changing fan target to %i%%' % pct)
-            self.run_ipmitool('raw', '0x30', '0x30', '0x01', '0x00')
-            self.run_ipmitool('raw', '0x30', '0x30', '0x02',
-                              '0xff',  # 0xFF means "all", otherwise fan index
-                              '0x%02x' % pct)
+            run_ipmitool('raw', '0x30', '0x30', '0x01', '0x00')
+            run_ipmitool('raw', '0x30', '0x30', '0x02',
+                         '0xff',  # 0xFF means "all", otherwise fan index
+                         '0x%02x' % pct)
             self.current_target = pct
 
     def get_sensors(self):
-        o = self.run_ipmitool('sensor').decode()
-        lines = [line.strip() for line in o.split('\n') if line.strip()]
-        last_sensors = self.sensors
-        self.sensors = {}
-        for line in lines:
-            fields = [x.strip() for x in line.split('|')]
-            val = fields[1]
-            if val.startswith('0x'):
-                val = int(val, 16)
-            else:
-                try:
-                    val = float(fields[1])
-                except ValueError:
-                    pass
-            if fields[0] in self.sensors:
-                # Some sensors (like CPU "Temp") are not unique,
-                # so take the higher of the values
-                try:
-                    self.sensors[fields[0]] = max(self.sensors[fields[0]], val)
-                except TypeError:
-                    # Multi-value sensor with differing types, just ignore
-                    pass
-            else:
-                self.sensors[fields[0]] = val
+        last = {s.name: s.current for s in self.monitor_temp.sensors}
 
-        log_sensors = []
-        for key in self.sensors:
-            if key not in self.config.get('log_sensors', []):
-                continue
-            if self.sensors[key] != last_sensors.get(key):
-                log_sensors.append('%s=%s' % (key, self.sensors[key]))
-        if log_sensors:
-            LOG.info('Other sensors: %s', ','.join(log_sensors))
+        self.monitor_temp.sample()
 
-    def safety_check(self):
-        for temp, limit in self.panic_temps.items():
-            try:
-                this_temp = int(self.sensors[temp])
-            except (ValueError, TypeError):
-                LOG.warning('Temp %s reported as %s; going to default',
-                            temp, self.sensors[temp])
-                self.fanmode_default()
-                return False
-            if self.sensors[temp] >= limit:
-                LOG.warning(
-                    'Temp %s %s over panic temp %s; going to default',
-                    temp, self.temp(this_temp), self.temp(limit))
-                self.fanmode_default()
-                return False
-        return True
+        vals = {}
+        for s in self.monitor_temp.sensors:
+            if s.current != last[s.name]:
+                vals[s.name] = '%i%+i' % (s.current, s.delta)
 
-    def regular_check(self):
-        temp = self.sensors[self.monitor_temp]
-        target = self.target_logic(temp)
+        if vals:
+            LOG.debug('Sensors: %s', ','.join(['%s=%s' % (k, v)
+                                               for k, v in vals.items()]))
+
+    def calculate_target(self):
+        target = self.target_logic()
         if target is None:
             self.fanmode_default()
         else:
@@ -164,17 +224,30 @@ class Controller:
                 prefix = HOSTNAME.split('.')[0]
             else:
                 prefix = HOSTNAME
+
+            vals = {'target': target,
+                    'delta': self.monitor_temp.delta}
+            for s in self.monitor_temp.sensors:
+                vals['sensor_%s' % s.name.replace(' ', '_')] = s.current
+
             report_values(self.config['graphite']['host'],
                           self.config['graphite'].get('port', 2003),
-                          {'%s.fancontrol.temp' % prefix: temp,
-                           '%s.fancontrol.target' % prefix: target})
+                          {'%s.fancontrol.%s' % (prefix, k): v
+                           for k, v in vals.items()})
 
     def monitor_loop(self):
         while self.run:
             self.check_config()
-            self.get_sensors()
-            if self.safety_check():
-                self.regular_check()
+            try:
+                self.get_sensors()
+            except Panic as e:
+                LOG.warning(e)
+                self.fanmode_default()
+            except Exception as e:
+                LOG.exception('Unknown failure: %s' % e)
+                self.fanmode_default()
+            else:
+                self.calculate_target()
             time.sleep(self.poll_time)
 
         # If we exit the control loop for any reason, back to default.
@@ -199,10 +272,10 @@ class SimpleController(Controller):
 
 class PIDController(Controller):
     def __init__(self, config):
-        self.pid = PID()
+        self.pid = PID(setpoint=0)
         super().__init__(config)
 
-        self._last_temp = None
+        self._last_delta = None
         self._last_target = None
 
     def load_config(self):
@@ -212,7 +285,6 @@ class PIDController(Controller):
         self.pid.Kp = self.pid_config.get('kp', 2) * -1
         self.pid.Ki = self.pid_config.get('ki', 0.02) * -1
         self.pid.Kd = self.pid_config.get('kd', 0.0) * -1
-        self.pid.setpoint = self.pid_config.get('target_temp', 32)
         self.pid.sample_time = self.pid_config.get('sample_time', 30)
         self.pid.proportional_on_measurement = bool(
             self.pid_config.get('pom', False))
@@ -220,15 +292,15 @@ class PIDController(Controller):
             self.pid_config.get('dom', False))
         self.pid.output_limits = (0, None)
         LOG.info('PID params %.2f,%.2f,%.2f '
-                 '(set %s, sample %i, pom %s, dom %s)',
+                 '(sample %i, pom %s, dom %s)',
                  self.pid.Kp, self.pid.Ki, self.pid.Kd,
-                 self.temp(self.pid.setpoint),
                  self.pid.sample_time,
                  self.pid.proportional_on_measurement,
                  self.pid.derivative_on_measurement)
 
-    def target_logic(self, temp):
-        output = self.pid(temp)
+    def target_logic(self):
+        delta = self.monitor_temp.delta
+        output = self.pid(delta)
 
         if output < 0:
             # If PID wants warmer, we're in good shape, so we can be at minimum
@@ -237,12 +309,12 @@ class PIDController(Controller):
             target = self.min_fan + (output * self.pid_config.get(
                 'fan_scale', 1))
 
-        if target != self._last_target or temp != self._last_temp:
-            LOG.debug('%s is %s Target %i%% want=%.1f',
-                      self.monitor_temp, self.temp(temp), target, output)
+        if target != self._last_target or delta != self._last_delta:
+            LOG.debug('Max delta is %s Target %i%% want=%.1f',
+                      delta, target, output)
 
         self._last_target = target
-        self._last_temp = temp
+        self._last_delta = delta
 
         return int(target)
 

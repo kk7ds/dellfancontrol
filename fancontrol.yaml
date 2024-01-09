@@ -1,18 +1,24 @@
 # min_fan is the minimum percentage we will ever run the fans at.
 min_fan: 10
-# panic_temps defines other IPMI sensors we will examine and if
-# any of them go over the specified limit, we will reset the fan
-# strategy to default to let the hardware manage them. "Temp" is
-# the CPU temp(s).
-panic_temps:
-  # If Exhaust Temp goes over this limit, panic and go back to
-  # system-managed fans
-  "Exhaust Temp": 40
-  # If CPU Temp goes over this limit, panic and go back to
-  # system-managed fans
-  "Temp": 60
-# sensor is the primary sensor we will monitor for controlling fan speeds.
-sensor: Exhaust Temp
+# Sensors to monitor
+sensors:
+  - name: Exhaust Temp
+    type: ipmi
+    # Setting a target means we will consider this sensor for fan control. If
+    # no target is set, we will only consider it for panic (if set) and log
+    # its value.
+    target: 32
+    # Setting a panic limit means that if this sensor ever exceeds this
+    # threshold, we will revert to system-managed fan controls. If no panic
+    # level is set, we will never let it push us into system-managed mode.
+    panic: 40
+  - name: Temp
+    type: ipmi
+    target: 50
+    panic: 60
+  - name: Temperature_Celsius:/dev/sdz
+    type: sata
+    target: 40
 # poll_time is how often (in seconds) we poll IPMI for temps.
 poll_time: 10
 pid:
@@ -34,10 +40,6 @@ pid:
   kp: 2
   ki: 0.02
   kd: 0
-log_sensors:
-  # List of IPMI sensors that we should also monitor for logging purposes.
-  - "Temp"
-  - "Inlet Temp"
 # Push the target and temperature values to graphite for monitoring
 #graphite:
 #  host: "eagle.hv.danplanet.com"
