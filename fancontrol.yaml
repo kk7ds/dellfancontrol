@@ -1,7 +1,15 @@
 # min_fan is the minimum percentage we will ever run the fans at.
 min_fan: 10
-# Sensors to monitor
+# Sensors to monitor. Probe each of these sensors and calculate the delta
+# between "current" and "target". We feed the maximum delta to the PID loop
+# and thus the sensor with the largest positive value over the target will
+# drive our cooling behavior. Any sensor with no target value will not drive
+# the PID loop, but will be considered for panic behavior, where we switch
+# back to system-managed fans.
 sensors:
+  # IPMI "Exhaust Temp" is really the best overall system temperature sensor
+  # we have, so we set this one aggressively and expect it to largely
+  # dictate our actions.
   - name: Exhaust Temp
     type: ipmi
     # Setting a target means we will consider this sensor for fan control. If
@@ -12,13 +20,24 @@ sensors:
     # threshold, we will revert to system-managed fan controls. If no panic
     # level is set, we will never let it push us into system-managed mode.
     panic: 40
+  # IPMI "Temp" is the maximum CPU temp, which fluctuates a lot. If it goes
+  # over a certain level it will start being managed, but we really want
+  # this here for the panic threshold, over which we will revert to system-
+  # managed fans.
   - name: Temp
     type: ipmi
     target: 50
     panic: 60
-  - name: Temperature_Celsius:/dev/sdz
-    type: sata
+  # Monitor the warmest disk in the system via SMART as well, which will
+  # sometimes heat up when the system doesn't if enough air is being pulled
+  # through other locations. NOTE: This temperature updates much less oftne
+  # than the IPMI sensors and as such the PID parameters, if tuned for
+  # system sensors, may way overshoot before this responds to increased
+  # cooling.
+  - name: /dev/sdz
+    type: smart
     target: 40
+    panic: 45
 # poll_time is how often (in seconds) we poll IPMI for temps.
 poll_time: 10
 pid:

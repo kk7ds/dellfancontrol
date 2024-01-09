@@ -14,6 +14,7 @@ import sys
 import time
 import yaml
 
+import pySMART
 from simple_pid import PID
 
 LOG = logging.getLogger('controller')
@@ -24,6 +25,8 @@ def report_values(host, port, values):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.connect((host, port))
     for key, value in values.items():
+        key = key.replace(' ', '_')
+        key = key.replace('/', '_')
         s.send(('%s %s %i\n' % (key, value, time.time())).encode())
     s.close()
 
@@ -45,8 +48,13 @@ class Panic(Exception):
     pass
 
 
+class IgnoreSensor(Exception):
+    pass
+
+
 class Sensor:
-    def __init__(self, target, panic, sample_time=0):
+    def __init__(self, name, target, panic, sample_time=0):
+        self.name = name
         self.target = target
         self.panic = panic
         self._current = target
@@ -57,7 +65,7 @@ class Sensor:
         pass
 
     def sample(self):
-        if time.monotonic() - self.last_sample > self.sample_time:
+        if time.monotonic() - self.last_sample >= self.sample_time:
             self._current = self.get_sample()
             self.last_sample = time.monotonic()
             if self.panic is not None and self.current >= self.panic:
@@ -94,10 +102,6 @@ class IPMISensor(Sensor):
     # Timestamp of last sensor refresh from IPMI
     _last_get = 0
 
-    def __init__(self, target, panic, name, sample_time=0):
-        super().__init__(target, panic)
-        self.name = name
-
     @classmethod
     def get_sensors(cls):
         if time.monotonic() - cls._last_get < 10:
@@ -133,6 +137,16 @@ class IPMISensor(Sensor):
         return self.sensors[self.name]
 
 
+class SMARTSensor(Sensor):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        if not pySMART.Device(self.name).interface:
+            raise IgnoreSensor('SMART device %s not accessible!' % self.name)
+
+    def get_sample(self):
+        return pySMART.Device(self.name).if_attributes.temperature
+
+
 class Controller:
     def __init__(self, config):
         self.conf_file = config
@@ -158,11 +172,17 @@ class Controller:
 
         self.monitor_sensors = []
         for data in self.config['sensors']:
-            if data['type'] == 'ipmi':
-                s = IPMISensor(data.get('target'), data.get('panic'),
-                               data['name'])
-            else:
-                LOG.error('Unknown sensor type %r' % data['type'])
+            try:
+                if data['type'] == 'ipmi':
+                    s = IPMISensor(data['name'], data.get('target'),
+                                   data.get('panic'))
+                elif data['type'] == 'smart':
+                    s = SMARTSensor(data['name'], data.get('target'),
+                                    data.get('panic'), sample_time=60)
+                else:
+                    raise IgnoreSensor('Unknown sensor type %r' % data['type'])
+            except IgnoreSensor as e:
+                LOG.warning(e)
                 continue
             self.monitor_sensors.append(s)
 
@@ -205,8 +225,11 @@ class Controller:
 
         vals = {}
         for s in self.monitor_temp.sensors:
-            if s.current != last[s.name]:
-                vals[s.name] = '%i%+i' % (s.current, s.delta)
+            if s.current != last[s.name] and s.target is not None:
+                vals[s.name] = '%i(%+i)' % (s.current, s.delta)
+            elif (s.current != last[s.name] and s.panic is not None and
+                  s.current / s.panic > 0.90):
+                vals[s.name] = '%i(!%i)' % (s.current, s.panic)
 
         if vals:
             LOG.debug('Sensors: %s', ','.join(['%s=%s' % (k, v)
@@ -228,7 +251,7 @@ class Controller:
             vals = {'target': target,
                     'delta': self.monitor_temp.delta}
             for s in self.monitor_temp.sensors:
-                vals['sensor_%s' % s.name.replace(' ', '_')] = s.current
+                vals['sensor_%s' % s.name] = s.current
 
             report_values(self.config['graphite']['host'],
                           self.config['graphite'].get('port', 2003),
