@@ -134,7 +134,11 @@ class IPMISensor(Sensor):
 
     def get_sample(self):
         self.get_sensors()
-        return self.sensors[self.name]
+        try:
+            return int(self.sensors[self.name])
+        except (TypeError, ValueError):
+            raise Panic('Invalid sensor value for %r received from IPMI!' % (
+                self.name))
 
 
 class SMARTSensor(Sensor):
