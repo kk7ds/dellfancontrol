@@ -30,7 +30,7 @@ sensors:
     panic: 60
   # Monitor the warmest disk in the system via SMART as well, which will
   # sometimes heat up when the system doesn't if enough air is being pulled
-  # through other locations. NOTE: This temperature updates much less oftne
+  # through other locations. NOTE: This temperature updates much less often
   # than the IPMI sensors and as such the PID parameters, if tuned for
   # system sensors, may way overshoot before this responds to increased
   # cooling.
