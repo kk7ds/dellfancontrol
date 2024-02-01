@@ -229,7 +229,10 @@ class Controller:
 
         vals = {}
         for s in self.monitor_temp.sensors:
-            if s.current != last[s.name] and s.target is not None:
+            # Only log extra sensors when they get close to the limit
+            if (s.current != last[s.name] and
+                    s.delta >= -2 and
+                    s.target is not None):
                 vals[s.name] = '%i(%+i)' % (s.current, s.delta)
             elif (s.current != last[s.name] and s.panic is not None and
                   s.current / s.panic > 0.90):
