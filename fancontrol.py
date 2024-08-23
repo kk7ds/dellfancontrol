@@ -22,13 +22,16 @@ HOSTNAME = socket.gethostname()
 
 
 def report_values(host, port, values):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.connect((host, port))
-    for key, value in values.items():
-        key = key.replace(' ', '_')
-        key = key.replace('/', '_')
-        s.send(('%s %s %i\n' % (key, value, time.time())).encode())
-    s.close()
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((host, port))
+        for key, value in values.items():
+            key = key.replace(' ', '_')
+            key = key.replace('/', '_')
+            s.send(('%s %s %i\n' % (key, value, time.time())).encode())
+        s.close()
+    except:
+        ...
 
 
 def run_ipmitool(*args):
@@ -158,6 +161,7 @@ class Controller:
         self.run = True
         self.current_target = object()
         self.sensors = {}
+        self.errors = 0
 
         # Attempt to always revert to default on exit
         atexit.register(self.fanmode_default)
@@ -265,6 +269,19 @@ class Controller:
                           {'%s.fancontrol.%s' % (prefix, k): v
                            for k, v in vals.items()})
 
+        if self.errors:
+            LOG.info('Recovered from %i sensor errors', self.errors)
+        self.errors = 0
+
+    def default_on_error(self):
+        if self.errors >= 3:
+            LOG.error('%i sensor errors - going to default', self.errors)
+            self.fanmode_default()
+        else:
+            LOG.warning('%i sensor errors, retrying before default',
+                        self.errors)
+            self.errors += 1
+
     def monitor_loop(self):
         while self.run:
             self.check_config()
@@ -272,10 +289,10 @@ class Controller:
                 self.get_sensors()
             except Panic as e:
                 LOG.warning(e)
-                self.fanmode_default()
+                self.default_on_error()
             except Exception as e:
                 LOG.exception('Unknown failure: %s' % e)
-                self.fanmode_default()
+                self.default_on_error()
             else:
                 self.calculate_target()
             time.sleep(self.poll_time)
