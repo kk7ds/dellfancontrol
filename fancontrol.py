@@ -289,7 +289,7 @@ class Controller:
                 self.get_sensors()
             except Panic as e:
                 LOG.warning(e)
-                self.default_on_error()
+                self.fanmode_default()
             except Exception as e:
                 LOG.exception('Unknown failure: %s' % e)
                 self.default_on_error()
