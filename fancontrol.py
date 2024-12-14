@@ -73,7 +73,7 @@ class Sensor:
             self.last_sample = time.monotonic()
             if self.panic is not None and self.current >= self.panic:
                 raise Panic('Sensor panic: %s is %i > %i' % (
-                    self, self.current, self.panic))
+                    self.name, self.current, self.panic))
 
     @property
     def current(self):
